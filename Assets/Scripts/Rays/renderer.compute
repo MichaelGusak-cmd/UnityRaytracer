@@ -1,0 +1,484 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Main
+
+/*struct Sphere
+{
+	float3 pos;
+	float radius;
+	float3 colour;
+};*/
+struct Sphere
+{
+	float3 pos;
+	float radius;
+
+	float3 ambient;
+	float3 diffuse;
+	float3 specular;
+	float shininess;
+
+	float3 reflective;
+	float3 transmissive;
+	float refraction;
+};
+
+struct Light 
+{
+	int type; // {point, directional, spotlight}
+	float3 pos; 
+	float intensity; //brightness
+	float3 colour;
+	float3 dir; //for directional/spotlight
+	float cutoff; //for spotlight cone size
+};
+
+RWStructuredBuffer<Sphere> spheres;
+RWStructuredBuffer<Light> lights;
+RWTexture2D<float4> Result;
+float time;
+float FOV;
+int width;
+int height;
+float3 eye; //eye position
+float3 eyeDir; //eye direction
+float2 eyeAngle; //eye angle?
+
+/*
+point3 s(int x, int y) {
+	float aspect_ratio = (float)vp_width / vp_height;
+	float h = d * (float)tan((M_PI * fov) / 180.0 / 2.0);
+	float w = h * aspect_ratio;
+   
+	float top = h;
+	float bottom = -h;
+	float left = -w;
+	float right = w;
+   
+	float u = left + (right - left) * (x + 0.5f) / vp_width;
+	float v = bottom + (top - bottom) * (y + 0.5f) / vp_height;
+   
+	return point3(u, v, -d);
+}
+*/
+#define PI 3.141592653589793238462
+#define EPSILON 0.00001
+#define MAX_FLOAT 65000
+
+
+float3 normalized(float3 n) {
+	return n /= length(n);
+}
+
+float3 clampFloat3(float3 vec, float min, float max) {
+	if (vec[0] < min) vec[0] = min;
+	else if (vec[0] > max) vec[0] = max;
+	if (vec[1] < min) vec[1] = min;
+	else if (vec[1] > max) vec[1] = max;
+	if (vec[2] < min) vec[2] = min;
+	else if (vec[2] > max) vec[2] = max;
+	return vec;
+}
+
+/*
+float3 rotX(float3 v, float rads) {
+	return float3(v.x,
+				  v.y * cos(rads) - v.z * sin(rads),
+				  v.y * sin(rads) + v.z * cos(rads));
+}
+float3 rotY(float3 v, float rads) {
+	return float3(v.x * cos(rads) + v.z * sin(rads),
+				  v.y,
+				 -v.x * sin(rads) + v.z * cos(rads));
+}*/
+
+float3 rand;
+
+float3 screen(int x, int y) {
+	float d = 1;
+	float aspect_ratio = (float)width / height;
+	float h = d * (float)tan((PI * FOV) / 180.0 / 2.0);
+	float w = h * aspect_ratio;
+
+	float top = h;
+	float bottom = -h;
+	float left = -w;
+	float right = w;
+
+	float u = left + (right - left) * (x + 0.5f) / width;
+	float v = bottom + (top - bottom) * (y + 0.5f) / height;
+	
+	float sinX = sin(eyeAngle.x); float sinY = sin(eyeAngle.y);
+	float cosX = cos(eyeAngle.x); float cosY = cos(eyeAngle.y);
+
+	float xVal = u*cosX +
+				 d*sinX + abs(sinY)*(d*-sinX) + 
+				 sinY*(v * sin(eyeAngle.x + PI));
+	float yVal = v*cosY + d*sinY;
+	float zVal = u*sinX +
+				 d*cos(eyeAngle.x - PI) + abs(sinY)*(d*-cos(eyeAngle.x - PI)) + 
+				 sinY * (v * cosX);
+	return normalized(float3(xVal, yVal, zVal));
+
+	// Directions and their working values								  xRot	yRot
+	//return float3( 1u+0d, v, 0u-1d); //look forward		 1, 0 : 0,-1    0*   0*
+	//return float3( 0u+1d, v, 1u+0d); //look right			 0, 1 : 1, 0   90*   0*
+	//return float3(-1u+0d, v, 0u+1d); //look back			-1, 0 : 0, 1  180*   0*
+	//return float3( 0u-1d, v,-1u+0d); //look left			 0,-1 :-1, 0  270*   0*
+	// 
+	//return float3(u, d, v); //look up(facing forward)		 1, 0 : 0, 1    0*	90*
+	//return float3(-v, d, u); //look up(facing right)		 0,-1 : 1, 0   90*	90*
+	//return float3(-u, d, -v); //look up (facing back)		-1, 0 : 0,-1  180*	90*
+	//return float3(v, d, -u); //look up(facing left)		 0, 1 :-1, 0  270*	90*
+	// 
+	//return float3(u, -d, -v); //look down(facing forward)	 1, 0 : 0,-1    0* -90*
+	//return float3(-v, -d, u); //look down(facing right)	 0,-1 : 1, 0   90* -90*
+	//return float3(-u, -d, v); //look down(facing back)	-1, 0 : 0, 1  180* -90*
+	//return float3(v, -d, -u); //look down(facing left)	 0, 1 :-1, 0  270* -90*
+}
+
+/*
+point3 s(int x, int y) {
+	float aspect_ratio = (float)vp_width / vp_height;
+	float h = d * (float)tan((M_PI * fov) / 180.0 / 2.0);
+	float w = h * aspect_ratio;
+
+	float top = h;
+	float bottom = -h;
+	float left = -w;
+	float right = w;
+
+	float u = left + (right - left) * (x + 0.5f) / vp_width;
+	float v = bottom + (top - bottom) * (y + 0.5f) / vp_height;
+
+	return point3(u, v, -d);
+}
+*/
+
+float3 screen2(int x, int y) {
+	float3 vup = float3(0, 1, 0);
+
+	float aspect_ratio = (float)width / height;
+	float theta = (PI * FOV) / (180.0 * 2.0);
+	float h = tan(theta / 2.0f);
+	float viewport_height = 2.0f * h;
+	float viewport_width = aspect_ratio * viewport_height;
+
+	float3 w = normalized(eye - eyeDir);
+	float3 u = normalized(cross(vup, w));
+	float3 v = cross(w, u);
+
+	float3 horizontal = viewport_width * u;
+	float3 vertical = viewport_height * v;
+	float3 lower_left_corner = eye - horizontal/2.0f - vertical/2.0f - w;
+	return lower_left_corner + x * horizontal + y * vertical - eye;
+}
+
+//float3 screen(int x, int y) {
+	/*
+	float widthRatio = rand.x;
+	float heightRatio = rand.y;
+	float d = rand.z;
+
+	float Vx = x * widthRatio;
+	float Vy = y * heightRatio;
+	float Vz = d;
+
+	return eyeDir * float3(Vx, Vy, Vz);
+	*/
+	/*
+	int d = 1; //make variable constant? TODO: check wtf this does lol
+
+	//> CONSTANTS <////////////////////
+	float aspectRatio = (float)width / height;
+	float radians = (PI * FOV) / (180.0 * 2.0);
+	float h = -d * (float)tan(radians);
+	float w = h * aspectRatio;
+
+	float top = h;
+	float bottom = -h;
+	float left = -w;
+	float right = w;
+	//////////////////////////
+
+
+	float u = left + (((right - left) * (x + 0.5f)) / width);
+	float v = bottom + (((top - bottom) * (y + 0.5f)) / height);
+
+	u = 0.001f * (x - 2);
+	v = 0.001f * (y - 2);
+
+	///// ROTATE ON Y-AXIS (left and right)
+	float theta = eyeDir.x;
+	float3 rotY = float3(u * cos(theta) + d * sin(theta),
+						 v,
+						-u * sin(theta) + d * cos(theta));
+	u = rotY.x; v = rotY.y; d = rotY.z;
+
+	///// ROTATE ON X-AXIS (up and down)
+	theta = eyeDir.y;
+	float3 rotX = float3(u,
+						 v * cos(theta) - d * sin(theta),
+						 v * sin(theta) - d * cos(theta));
+	*/
+
+	/*
+	float scale = 200;
+	float numRaysWidth = scale;
+	float numRaysHeight = scale;
+	
+
+	float3 rX = rotX(float3(numRaysWidth, 0, 0), eyeDir.x);
+	float3 xIncVec = rotY(rX, eyeDir.y);
+
+	rX = rotX(float3(0, numRaysHeight, 0), eyeDir.x);
+	float3 yIncVec = rotY(rX, eyeDir.y);
+	
+	return normalized(float3(xIncVec.x * x + yIncVec.x * y,
+							 xIncVec.y * x + yIncVec.y * y,
+							 xIncVec.z * x + yIncVec.z * y));
+	*/
+
+
+	//return normalized(rotY(rotX()));
+	//return normalized(rotX);
+	//float3 eyeDirPerp = normalized(float3(eyeDir.z, eyeDir.y, -eyeDir.x));
+	//https://blog.scottlogic.com/2020/03/10/raytracer-how-to.html
+	//MAKE THIS CORRECTLY AND IT SHOULD JUST WORK
+	//return normalized(float3(u, v, eyeDir.z));
+
+//}
+
+
+
+//output: (bool, t0, t1) where t0 < t1
+//(bool > 0 == true), (bool < 0 == false)
+float3 solveQuadratic(float a, float b, float c) {
+	float discr = (b*b) - (4*a*c);
+	if (discr < 0) return float3(-1, 0, 0);
+	else if (abs(discr) < EPSILON) { //one solution
+		float val = -0.5f * b / a;
+		return float3(0.5, val, val); //check for output[0] > 0 && output[0] < 1
+	}
+	else {
+		float q = 0;
+		if (b > 0) q = -0.5 * (b + sqrt(discr));
+		else q = -0.5 * (b - sqrt(discr));
+		float x0 = q / a;
+		float x1 = c / q;
+		if (x0 > x1) return float3(1.5, x1, x0); //check for output[0] > 0 && output[0] > 1
+		else return float3(1.5, x0, x1); //check for output[0] > 0 && output[0] > 1
+	}
+}
+
+float power(float a, int n) {
+	for (int i = 1; i < n; i++) a *= a;
+	return a;
+}
+
+
+float sphereIntersection(float3 source, float3 dir, Sphere sphere) {
+	//point3 p = -(s - e) * pos[2];
+	//if (glm::length(glm::vec3(p.x - pos[0], p.y - pos[1], 0)) < sphere->radius) {
+	/*// Bad implementation:
+	float3 p = -(dir - source) * sphere.pos[2];
+	if (length(float3(p[0] - sphere.pos[0], p[1] - sphere.pos[1], 0)) < sphere.radius) {
+		return true;
+	}
+	return false;*/
+	/* //GEOMETRIC SOLUTION
+	float t0, t1;
+
+	float3 L = sphere.pos - source;
+	float tca = dot(L, dir);
+	//if (tca < 0) return false;
+	float d2 = dot(L, L) - tca * tca;
+	float radius2 = sphere.radius * sphere.radius;
+	if (d2 > radius2) return -1;
+	float thc = sqrt(radius2 - d2);
+	*/
+
+	float radius2 = sphere.radius * sphere.radius;
+	float3 L = source - sphere.pos;
+	float a = dot(dir, dir);
+	float b = 2 * dot(dir, L);
+	float c = dot(L, L) - radius2;
+	float3 solution = solveQuadratic(a, b, c);
+	if (solution[0] < 0) return -1; //no solution
+	
+	float t0 = solution[1];
+	float t1 = solution[2];
+	if (t0 < 0) {
+		t0 = t1; //t0 is negative, try t1
+		if (t0 < 0) return -1; //both are negative
+	}
+	return t0;
+}
+
+float3 colour; //pixel colour
+float3 p; //point of intersection
+float3 N; //Normal
+float3 objAmbient;
+float3 objDiffuse;
+float3 objSpecular;
+float objShiny;
+/*	float3 ambient;
+	float3 diffuse;
+	float3 specular;
+	float shininess;
+
+	float3 reflective;
+	float3 transmissive;
+	float refraction; */
+
+float closestIntersection(float3 source, float3 dir, bool setGlobals) {
+	float minT = MAX_FLOAT; //some really large value (care for 16-bit floats, max = 65500)
+
+	uint numObjects, stride;
+	spheres.GetDimensions(numObjects, stride);
+	for (int i = 0; i < (int)numObjects; i++) {
+		float t = sphereIntersection(source, dir, spheres[i]);
+		if (t > 0 && t < minT) { //point of intersection exists && closest so far
+			minT = t;
+			if (setGlobals) {
+				p = source + (dir * t); //point of intersection
+				N = normalized(p - spheres[i].pos); //normal
+				objAmbient = spheres[i].ambient;
+				objDiffuse = spheres[i].diffuse;
+				objSpecular = spheres[i].specular;
+				objShiny = spheres[i].shininess;
+			}
+		}
+	}
+	return minT;
+}
+
+/*
+* Ray Tracer:
+*	Traces each ray through the scene, checking for
+*	collisions and lighting for a ray through each 
+*	pixel in the screen.
+* Quality optimization:
+*	Subpixel rays, then average the colour values
+*	(results in built-in anti-aliasing)
+*/
+void trace(float3 source, float3 dir) {
+	p = float3(0, 0, 0);
+	N = float3(0, 0, 0);
+	//colour = float3(0, 0, 0);
+	float intersection = closestIntersection(source, dir, true); //do I even need this?
+	bool hit = false;
+	if (intersection < MAX_FLOAT - 1) {
+		//p = source + (dir * intersection);
+		hit = true;
+		colour = float3(0, 0, 0); //reset colour so its not background colour
+	}
+
+	//////////////-- Lighting:
+	//Point p and Normal N must be populated.
+	if (hit) {
+		//colour = float3(0, 0, 1);
+		uint numObjects, stride;
+		lights.GetDimensions(numObjects, stride);
+		for (int i = 0; i < (int)numObjects; i++) {
+			float3 Ia = float3(0, 0, 0); //ambient
+			float3 Id = float3(0, 0, 0); //diffuse
+			float3 Is = float3(0, 0, 0); //specular
+			float3 Im = float3(0, 0, 0); //mirror
+
+			bool inShadow = false;
+			float lightStrength = 1;
+			int alpha = 7;
+			int spotlightEdge = 20; //larger == sharper edge (make it inversely scale with distance to light?)
+
+
+			float3 lightDir = normalized(lights[i].dir); //direction to light (normalized)
+			if (lights[i].type == 0) { //ambient light
+				Ia = lights[i].colour * objAmbient;
+			}
+			else if (lights[i].type > 0) {
+				if (lights[i].type == 1) { //point light
+					lightDir = normalized(lights[i].pos - p);
+				}
+				else if (lights[i].type == 3) { //spotlight
+					float3 posVec = normalized(lights[i].pos - p); // spotLight->position - point);
+					float angle = acos(dot(posVec, lightDir));
+					float subtract = angle - lights[i].cutoff;
+					if (subtract > 0) {
+						subtract *= spotlightEdge;
+						if (subtract > PI) subtract = PI;
+						lightStrength = cos(subtract);
+						//if (lightStrength < 0.1) inShadow = true;
+					}
+				}
+
+				//== Check if point is in shadow
+				// by checking the distance to the closest intersection with anything
+				// and the distance to the light (if light is closer then not in shadow)
+				float t = closestIntersection(p + N * EPSILON * (1 + length(eye - p)), -lightDir, false); //dont update point and normal
+				if (t > 0 && t < MAX_FLOAT - 1) {
+					float lightDist = length(lights[i].pos - p);
+					float closestDist = length(lightDir * t);
+					if (lightDist > closestDist) {
+						inShadow = true;
+					}
+				}
+
+				//== Calculate different light Intensities
+				if (!inShadow) {
+					//Calculating Specular Value:
+					float3 R = (2 * dot(N, lightDir) * N) - lightDir;
+					float3 V = dir;
+					float RdotV = dot(R, V);
+					if (RdotV < 0) RdotV = 0;
+
+					Id = lights[i].colour * objDiffuse * dot(N, -lightDir);
+					Is = lights[i].colour * objSpecular * power(RdotV, alpha) * objShiny;
+				}
+			} //end else if (light type > 0)
+
+			//== Final step for each light:
+			Ia = clampFloat3(Ia, 0.0f, 1.0f);
+			Id = clampFloat3(Id, 0.0f, 1.0f);
+			Is = clampFloat3(Is, 0.0f, 1.0f);
+			Im = clampFloat3(Im, 0.0f, 1.0f);
+
+			float3 finalSum = (Ia + Id + Is + Im) * lightStrength * lights[i].intensity;
+			colour += finalSum;
+		} //end for()
+	} //end if(hit)
+} //end trace()
+
+
+[numthreads(8,8,1)]
+void Main (uint3 id : SV_DispatchThreadID)
+{
+	//eye: point source of ray
+	//screen: point of ray on the screen
+	//colour: background colour by default
+	trace(eye, screen(id.x, id.y));
+	Result[id.xy] = float4(colour, 0.0f);
+	//Result[id.xy] = float4(id.x & id.y, (id.x & 15)/15.0 + (time%5)/5, (id.y & 15)/15.0, 0.0);
+}
+
+float deltaTime;
+#pragma kernel Update
+
+int power(int index) {
+	int output = -1;
+	for (int i = 0; i < index; i++) {
+		output *= output;
+	}
+	return output;
+}
+
+[numthreads(8,1,1)]
+void Update(uint3 id : SV_DispatchThreadID) 
+{
+	uint numObjects, stride;
+	spheres.GetDimensions(numObjects, stride);
+	if (id.x < numObjects)
+		spheres[id.x].pos[0] += (spheres[id.x].radius/4)*deltaTime;
+	lights.GetDimensions(numObjects, stride);
+	if (id.x < numObjects)
+		lights[id.x].pos.x += deltaTime * power(id.x);
+}
